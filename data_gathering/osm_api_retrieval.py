@@ -7,9 +7,9 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import shape
 from tqdm import tqdm
+from constants import osm_data_path, osm_start_date, osm_end_date, osm_area
 
-
-def swap_xy(geom):
+def swap_xy(geom: shape) -> str:
     if geom.is_empty:
         return geom
 
@@ -38,7 +38,7 @@ def swap_xy(geom):
         raise ValueError('Type %r not recognized' % geom.geom_type)
 
 
-def isvalid(geom):
+def isvalid(geom: str) -> bool:
     try:
         shape(geom)
         return True
@@ -66,12 +66,12 @@ def crawlOpenStreetMapData(cityName: str, elementTypes: str | list, timeoutSpan:
     geoResultDataFrame.geometry = geoResultDataFrame.geometry.map(swap_xy)
     geoResultDataFrame.to_parquet(pathFile)
 
-def handleRequestOSM(startDate, endDate, dateFrequency, cityName, geometryTags, timeOut):
+def handleRequestOSM(startDate: str, endDate: str, dateFrequency: str, cityName: str, geometryTags: list, timeOut: int):
     dateRange = pd.date_range(start=startDate, end=endDate, freq=dateFrequency).values
     for date in tqdm(dateRange):
         date = str(date)
-        crawlOpenStreetMapData(cityName, geometryTags, timeOut, f'/ceph/mboeckli/stkg_comparison_data/airpolution_data/base_data/openstreetmap/SeoulOSMData{date}.parquet', date)
+        crawlOpenStreetMapData(cityName, geometryTags, timeOut, f'{osm_data_path}/osm_datta_{date}.parquet', date)
 
-
-handleRequestOSM(startDate='2017-01-01', endDate='2020-01-01', dateFrequency='MS',
-                 cityName='Seoul, South Korea', geometryTags=['node', 'way', 'relation'], timeOut=200)
+if __name__ == "__main__":
+    handleRequestOSM(startDate=osm_start_date, endDate=osm_end_date, dateFrequency='MS',
+                    cityName=osm_area, geometryTags=['node', 'way', 'relation'], timeOut=200)

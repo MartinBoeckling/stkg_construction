@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 import pandas as pd
-from constants import helper_path_directory
+from helper.constants import helper_path_directory
 
 def osm_tags_crawler(helper_path_directory: str) -> None:
     # setup selenium parameters to simulate browser due to JavaScript elements

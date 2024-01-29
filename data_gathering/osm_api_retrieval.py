@@ -1,5 +1,18 @@
 """
-
+Title:
+    OSM API retrieval
+Description:
+    This script provides the wrapper method to download flexible areas over the world. As a backbone the Overpass API is used, which
+    only allows the download of smaller regions on city/ small stae level. Overpass has a limit of 5 GB query result return
+Input:
+    - osm_start_date: Start date of API extraction
+    - osm_end_date: End date of API extraction
+    - date_frequency: Frequency to generate time sequence between osm_start_date and osm_end_date
+    - city_name: Name of the respective city
+    - geometry_tags: 
+    - time_out:
+Output:
+    - Write Geoparquet file to defined location
 """
 from OSMPythonTools.nominatim import Nominatim
 from OSMPythonTools.overpass import overpassQueryBuilder, Overpass
@@ -7,7 +20,7 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import shape
 from tqdm import tqdm
-from constants import osm_data_path, osm_start_date, osm_end_date, osm_area
+from helper.constants import osm_data_path, osm_start_date, osm_end_date, osm_area
 
 def swap_xy(geom: shape) -> str:
     if geom.is_empty:
@@ -46,13 +59,13 @@ def isvalid(geom: str) -> bool:
         return False
 
 
-def crawlOpenStreetMapData(cityName: str, elementTypes: str | list, timeoutSpan: int, pathFile: str, crawlDate: str) -> None:
+def crawlOpenStreetMapData(city_name: str, element_types: str | list, timeout_span: int, path_file: str, crawl_date: str) -> None:
     nominatim = Nominatim()
-    areaId = nominatim.query(cityName).areaId()
+    areaId = nominatim.query(city_name).areaId()
     overpass = Overpass()
-    query = overpassQueryBuilder(area=areaId, elementType=elementTypes, includeGeometry=True, out='body')
-    result = overpass.query(query, timeout=timeoutSpan,
-                            date=crawlDate)
+    query = overpassQueryBuilder(area=areaId, elementType=element_types, includeGeometry=True, out='body')
+    result = overpass.query(query, timeout=timeout_span,
+                            date=crawl_date)
     resultData = [element.tags() for element in result.elements() if element.tags() is not None]
     resultDataGeometry = [{'ID': element.id(), 'geometry': element.geometry()} for element in result.elements() if element.tags() is not None]
     resultDataFrame = pd.DataFrame(resultData)
@@ -64,14 +77,16 @@ def crawlOpenStreetMapData(cityName: str, elementTypes: str | list, timeoutSpan:
     resultDataFrame = resultDataFrame.drop(columns=['isValid', 'created_by'])
     geoResultDataFrame = gpd.GeoDataFrame(resultDataFrame, geometry='geometry')
     geoResultDataFrame.geometry = geoResultDataFrame.geometry.map(swap_xy)
-    geoResultDataFrame.to_parquet(pathFile)
+    geoResultDataFrame.to_parquet(path_file)
 
-def handleRequestOSM(startDate: str, endDate: str, dateFrequency: str, cityName: str, geometryTags: list, timeOut: int):
-    dateRange = pd.date_range(start=startDate, end=endDate, freq=dateFrequency).values
+def handleRequestOSM(start_date: str, end_date: str, date_frequency: str, city_name: str, geometry_tags: list, time_out: int) -> None:
+    assert pd.to_datetime(start_date) >= pd.to_datetime("2012-01-01"), "OpenStreetMap has only captured data starting from 2012"
+    assert pd.to_datetime(end_date) <= pd.Timestamp.today(), "OpenStreetMap can not retrieve data from the future"
+    dateRange = pd.date_range(start=start_date, end=end_date, freq=date_frequency).values
     for date in tqdm(dateRange):
         date = str(date)
-        crawlOpenStreetMapData(cityName, geometryTags, timeOut, f'{osm_data_path}/osm_datta_{date}.parquet', date)
+        crawlOpenStreetMapData(city_name, geometry_tags, time_out, f'{osm_data_path}/osm_data_{date}.parquet', date)
 
 if __name__ == "__main__":
-    handleRequestOSM(startDate=osm_start_date, endDate=osm_end_date, dateFrequency='MS',
-                    cityName=osm_area, geometryTags=['node', 'way', 'relation'], timeOut=200)
+    handleRequestOSM(start_date=osm_start_date, end_date=osm_end_date, date_frequency='MS',
+                    city_name=osm_area, geometry_tags=['node', 'way', 'relation'], time_out=200)

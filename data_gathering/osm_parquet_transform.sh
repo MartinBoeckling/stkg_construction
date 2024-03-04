@@ -1,5 +1,7 @@
 # Transform data from .pbf to geoparquet
 export CPL_LOG=/dev/null
+echo "Transform file: ${4}"
+
 ogr2ogr -skipfailures -f parquet -progress -overwrite -explodecollections -makevalid --config CPL_TMPDIR $1 -oo $2 "${3}_osm_point.parquet" $4 points
 
 ogr2ogr -skipfailures -f parquet -progress -overwrite -explodecollections -makevalid --config CPL_TMPDIR $1 -oo $2 "${3}_osm_line.parquet" $4 lines

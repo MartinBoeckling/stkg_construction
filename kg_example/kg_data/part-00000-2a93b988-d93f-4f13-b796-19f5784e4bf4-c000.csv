@@ -1,6 +1,6 @@
 subject,predicate,object,date
-240974013,rdfs:subclass,university,2024-01-01
-university,rdfs:subclass,amenity,2024-01-01
+240974013,rdf:type,university,2024-01-01
+university,rdfs:subClassOf,amenity,2024-01-01
 240974013,addr:city,Mannheim,2024-01-01
 240974013,addr:place,B6,2024-01-01
 240974013,addr:postcode,68159,2024-01-01

@@ -6,12 +6,19 @@ from pyspark.sql.types import MapType, StringType
 from helper.constants import *
 from sedona.spark import SedonaContext
 from sedona.sql.st_functions import ST_AsText
+from sedona.sql.st_predicates import ST_CoveredBy, ST_Covers, ST_Intersects, ST_Contains, ST_Crosses, ST_Equals, ST_Overlaps, ST_Touches, ST_Within
 import h3_pyspark
 
 # initialize spark context
 
-def osm_tags_transformation(osm_data_path:str, helper_path_directory:str) -> None:
-    """_summary_
+def kg_creation() -> None:
+    """
+    As a computational engine we use Apache Sedona to scale
+    the Knowledege Graph creation process. For the Knowledge Graph
+    creation we divide our creation in different parts. The first part
+    transforms the tag structure of OpenStreetMap into a triple structure.
+    Based on the fact whether a tag is marked as a commonly used tag, we
+    transform the tag into a subclass relation for the Knowledge Graph.
 
     Args:
         osm_data_path (str): _description_
@@ -21,9 +28,10 @@ def osm_tags_transformation(osm_data_path:str, helper_path_directory:str) -> Non
     builder = SparkSession.\
         builder.\
         master(spark_master).\
-        appName('kgcreation').\
+        appName('kg_creation').\
         config('spark.driver.memory', spark_driver_memory).\
         config('spark.executor.memory', spark_executor_memory).\
+        config("spark.worker.cleanup.enabled", "true").\
         config("spark.local.dir", spark_temp_directory).\
         config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension").\
         config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
@@ -52,17 +60,17 @@ def osm_tags_transformation(osm_data_path:str, helper_path_directory:str) -> Non
                ifnull(osm_key_value.Transform, lit(False)).alias("Transform"))
 
     osm_data_tags = osm_joined_tags.select(col("osm_id").alias("subject"),
-                                           lit("rdfs:subclass").alias("predicate"),
+                                           lit("rdf:type").alias("predicate"),
                                            col("value").alias("object"),
                                            col("date")).\
                                            where(osm_joined_tags.Transform == True).\
-                                    union(osm_joined_tags.select(col("value").alias("subject"),
-                                           lit("rdfs:subclass").alias("predicate"),
+                                    unionAll(osm_joined_tags.select(col("value").alias("subject"),
+                                           lit("rdfs:subClassOf").alias("predicate"),
                                            col("key").alias("object"),
                                            col("date")).\
                                            where(osm_joined_tags.Transform == True)).\
-                                    union(osm_joined_tags.select(col("osm_id").alias("subject"),
-                                           lit("key").alias("predicate"),
+                                    unionAll(osm_joined_tags.select(col("osm_id").alias("subject"),
+                                           col("key").alias("predicate"),
                                            col("value").alias("object"),
                                            col("date")).\
                                            where(osm_joined_tags.Transform == False))
@@ -77,70 +85,89 @@ def osm_tags_transformation(osm_data_path:str, helper_path_directory:str) -> Non
                                             unionAll(osm_data_geometry.select(concat(lit("geo"), col("osm_id")).alias("subject"),
                                                    lit("geo:asWKT").alias("predicate"),
                                                    ST_AsText(col("geometry")).alias("object"),
-                                                   col("date"))).\
-                                            unionAll(osm_data_geometry.select(concat(lit("geo"), col("osm_id")).alias("subject"),
-                                                   lit("rdf:type").alias("predicate"),
-                                                   lit("geo:Geometry").alias("object"),
                                                    col("date")))
 
     """
     Repetition of the h3_grid data from the Knowledge Graph
     """
-    
+    if grid_compaction:
+        h3_grid = h3_grid.withColumn('resolution', h3_pyspark.h3_get_resolution(col('h3_id')))
+    else:
+        h3_grid = h3_grid.withColumn('resolution', lit(grid_level))
+        h3_grid_geometry = h3_grid.\
+            select(col("h3_id").alias("subject"), lit("geo:hasGeometry").alias("predicate"), concat(lit("geoH3"), "h3_id").alias("object")).\
+            unionAll(h3_grid.select(concat(lit("geoH3"), "h3_id").alias("subject"), lit("geo:asWKT").alias("predicate"), ST_AsText(col("geometry")).alias("object")))
+        h3_grid.createOrReplaceTempView("h3_grid")
+        
+        h3_grid_neighbor = h3_grid.alias("leftH3").\
+            join(h3_grid.alias("rightH3"), on=expr("ST_INTERSECTS(leftH3.geometry, rightH3.geometry) AND leftH3.h3_id != rightH3.h3_id AND leftH3.resolution = rightH3.resolution")).\
+            select(col("leftH3.h3_id").alias("subject"), lit("hcf:isAdjacentTo").alias("predicate"), col("rightH3.h3_id").alias("object"))
+        
+        if grid_compaction:
+            h3_grid_parent = h3_grid.alias("leftH3").\
+                join(h3_grid.alias("rightH3"), on=expr("leftH3.h3_id != rightH3.h3_id AND leftH3.resolution < rightH3.resolution AND ST_INTERSECTS(leftH3.geometry, rightH3.geometry)")).\
+                select(col("leftH3.h3_id").alias("subject"), lit("isParentCellOf").alias("predicate"), col("rightH3.h3_id").alias("object"))
+            
+            h3_grid_child = h3_grid_parent.\
+                select(col("object").alias("subject"), lit("isChildCellOf").alias("predicate"), col("subject").alias("object"))
+
+            h3_grid_relation = h3_grid_geometry.\
+                unionAll(h3_grid_child).\
+                unionAll(h3_grid_parent).\
+                unionAll(h3_grid_neighbor)
+        else:
+            h3_grid_relation = h3_grid_geometry.\
+                unionAll(h3_grid_neighbor)
+        
+    unique_date = osm_data.select('date').distinct().toPandas()['date'].astype('str').tolist()
+    h3_grid_relation = h3_grid_relation.withColumn("date", explode(lit(unique_date)))
     """
     Creation of h3 grid to OpenStreetMap relation based on the different geometries for the respective items
     """
-    osm_data.createOrReplaceTempView("osm_data")
-    h3_grid.createOrReplaceTempView("h3_grid")
-    contains_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfContains' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Contains(h3_grid.geometry, osm_data.geometry)
-    """)
-    crosses_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfCrosses' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Crosses(h3_grid.geometry, osm_data.geometry)
-    """)
-    equals_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfEquals' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Equals(h3_grid.geometry, osm_data.geometry)
-    """)
-    overlaps_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfOverlaps' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Overlaps(h3_grid.geometry, osm_data.geometry)
-    """)
-    touches_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfTouches' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Touches(h3_grid.geometry, osm_data.geometry)
-    """)
-    within_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfWithin' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Within(h3_grid.geometry, osm_data.geometry)
-    """)
-    covers_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:ehCovers' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Covers(h3_grid.geometry, osm_data.geometry)
-    """)
-    coveredby_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:ehCoveredBy' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_CoveredBy(h3_grid.geometry, osm_data.geometry)
-    """)
-    intersects_relation = sedona.sql("""
-        SELECT h3_grid.h3_id AS subject, 'geo:sfIntersects' AS predicate, osm_data.osm_id AS object, osm_data.date AS date
-        FROM osm_data, h3_grid
-        WHERE ST_Intersects(h3_grid.geometry, osm_data.geometry)
-    """)
+
+    intersects_data = osm_data.alias("osm_data").\
+        join(h3_grid.alias("h3_grid"), on=expr("ST_Intersects(h3_grid.geometry, osm_data.geometry)")).\
+        select(col("h3_grid.h3_id").alias("h3_id"), col("h3_grid.geometry").alias("h3_geometry"), col("osm_data.osm_id").alias("osm_id"), col("osm_data.geometry").alias("osm_geometry"), col("osm_data.date").alias("date"))
+
+    intersects_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfIntersects").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date"))
+
+    contains_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfContains").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Contains(col("h3_geometry"), col("osm_geometry")))
+    
+    crosses_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfCrosses").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Crosses(col("h3_geometry"), col("osm_geometry")))
+
+    equals_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfEquals").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Equals(col("h3_geometry"), col("osm_geometry")))
+
+    overlaps_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfOverlaps").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Overlaps(col("h3_geometry"), col("osm_geometry")))
+
+    touches_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfTouches").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Touches(col("h3_geometry"), col("osm_geometry")))
+
+    within_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:sfWithin").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Within(col("h3_geometry"), col("osm_geometry")))
+
+    covers_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:ehCovers").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_Covers(col("h3_geometry"), col("osm_geometry")))
+
+    coveredby_relation = intersects_data.\
+        select(col("h3_id").alias("subject"), lit("geo:ehCoveredBy").alias("predicate"), col("osm_id").alias("object"), col("date").alias("date")).\
+        where(ST_CoveredBy(col("h3_geometry"), col("osm_geometry")))
 
     # combine the different datasets together
     osm_kg_data = osm_data_tags.\
         unionAll(osm_data_geometry).\
+        unionAll(intersects_relation).\
         unionAll(contains_relation).\
         unionAll(crosses_relation).\
         unionAll(equals_relation).\
@@ -149,11 +176,11 @@ def osm_tags_transformation(osm_data_path:str, helper_path_directory:str) -> Non
         unionAll(within_relation).\
         unionAll(covers_relation).\
         unionAll(coveredby_relation).\
-        unionAll(intersects_relation)
+        unionAll(h3_grid_relation)
 
     osm_kg_data.write.mode("overwrite").\
         format("delta").\
         save(kg_output_path)
 
 if __name__ == "__main__":
-    osm_tags_transformation(osm_parquet_path, helper_path_directory)
+    kg_creation()

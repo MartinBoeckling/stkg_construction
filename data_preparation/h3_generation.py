@@ -13,24 +13,34 @@ import json
 import pandas as pd
 from multiprocessing import Pool
 from tqdm import tqdm
+from pyspark.sql.functions import col
 from shapely.geometry import Polygon
 from shapely.geometry import box
 from sedona.spark import SedonaContext
-from sedona.sql.st_functions import ST_GeoHash
+from sedona.sql.st_functions import ST_GeoHash, ST_MakeValid
 from helper.constants import *
 from OSMPythonTools.nominatim import Nominatim
 """
 
 """
 def extract_h3_grid(world_data_feature: dict) -> dict:
-    """_summary_
+    """
+    For the creation of our Knowledge Graph, we align the OpenStreetMap geometries using the h3 DGG
+    created by Uber. Each individual grid cell is respresented as a regular hexagon (with the exception of 12
+    grid cells per level which have a pentagon structure). To generate the grid cells we use a
+    base of the world map
 
     Args:
         world_data_feature (dict): Dictionary that contains country properties as a nested
         dictionary together with the respective geometry of a country
 
     Returns:
-        dict: _description_
+        dict: Return of dictionary that contains feature specific keys:
+            - country (str): 
+            - continent (str):
+            - subregion (str):
+            - h3_id (list):
+            - land_geometry:
     """
     properties = world_data_feature['properties']
     geometry = world_data_feature['geometry']
@@ -41,7 +51,7 @@ def extract_h3_grid(world_data_feature: dict) -> dict:
     return row_dict
 
 def create_h3_grid() -> None:
-    world_data = gpd.read_parquet('/ceph/mboeckli/worlddata/world_data.parquet')
+    world_data = gpd.read_parquet('helper/worlddata/world_data.parquet')
     world_data = world_data.explode(ignore_index=True)
     nominatim = Nominatim()
     area_parameter = nominatim.query(osm_area).toJSON()[0].get('boundingbox')
@@ -72,6 +82,7 @@ def create_h3_grid() -> None:
     sedona = SedonaContext.create(config)
     sedona_df = sedona.createDataFrame(gdf_data)
     sedona_df = sedona_df.withColumn('geohash', ST_GeoHash('geometry', geo_hash_level)).orderBy('geohash')
+    sedona_df =  sedona_df.withColumn("geometry", ST_MakeValid(col("geometry")))
     sedona_df.write.mode('overwrite').format('geoparquet').save(grid_parquet_path)
 
 if __name__ == "__main__":

@@ -12,17 +12,16 @@ osm_clipping = False
 ogr_temporary = "/ceph/mboeckli/stkg/ogrTemp"
 
 # data preparation variables
-cpu_cores = 35
+cpu_cores = 65
 spark_master = f"local[{cpu_cores}]"
 spark_temp_directory = "/ceph/mboeckli/sparkTmp"
-spark_driver_memory = "200G"
-spark_executor_memory = "200G"
+spark_driver_memory = "250G"
+spark_executor_memory = "400G"
 kg_output_path = "/ceph/mboeckli/stkg/gold/knowledge_graph"
 grid_clipping = False
-grid_level = 5
+grid_level = 6
 grid_compaction = False
 grid_parquet_path = "/ceph/mboeckli/stkg/silver/h3_grid.parquet"
-grid_kg_path = "/ceph/mboeckli/stkg_comparison_data/wildfire_data/base_data/grid/h3_grid_kg.parquet"
 geo_hash_level = 3
 sedona_packages = ['org.apache.sedona:sedona-spark-shaded-3.5_2.12:1.5.1,'
                    'org.datasyslab:geotools-wrapper:1.5.1-28.2']

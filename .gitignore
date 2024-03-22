@@ -162,4 +162,5 @@ cython_debug/
 *cache/
 test.py
 data/*
-**/nohup**
+**/*.out**
+runtime_test/**
